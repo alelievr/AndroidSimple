@@ -3,6 +3,7 @@ package com.drivetogethercompany.androidsimple;
 import android.app.FragmentManager;
 import android.content.Context;
 import android.os.AsyncTask;
+import android.os.Handler;
 import android.util.Log;
 import android.view.View;
 
@@ -21,7 +22,6 @@ import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLConnection;
-import java.net.URLEncoder;
 import java.util.concurrent.TimeUnit;
 
 public class AndroidSimple {
@@ -29,6 +29,18 @@ public class AndroidSimple {
     private static Context con = null;
     private static FragmentManager fm = null;
     private static View v = null;
+
+    public static void setContext(Context con) {
+        AndroidSimple.con = con;
+    }
+
+    public static void setFragmentManager(FragmentManager fm) {
+        AndroidSimple.fm = fm;
+    }
+
+    public static void setView(View v) {
+        AndroidSimple.v = v;
+    }
 
     public AndroidSimple(Context applicationContext, FragmentManager fragmentManager, View view) {
         con = applicationContext;
@@ -39,20 +51,17 @@ public class AndroidSimple {
     public AndroidSimple() {
     }
 
-    private static class callback {
+    public static class Callback {
 
         public void onEvent(String ret, Context c, FragmentManager fm, View v) {
             //base: nothing !
         }
-    }
 
-    public static class Callback extends callback {
-        public Callback() {
+        public void toExecute() {
         }
     }
 
     public class Callbacks<T> {
-
         private Callback cancelled = null;
         private Callback postExecute = null;
         private Callback progressUpdate = null;
@@ -61,7 +70,7 @@ public class AndroidSimple {
 
         public T setOnPreExecuteCallback(Callback pre) {
             preExecute = pre;
-            return (T)this;
+            return (T) this;
         }
 
         public T setOnFailedCallback(Callback failed) {
@@ -140,10 +149,8 @@ public class AndroidSimple {
             this.addPOST = addPOST;
         }
 
-        public Upload setTimeOut(long time, TimeUnit unit)
-        {
-            if (ua != null)
-            {
+        public Upload setTimeOut(long time, TimeUnit unit) {
+            if (ua != null) {
                 try {
                     ua.get(time, unit);
                 } catch (Exception ex) {
@@ -178,8 +185,7 @@ public class AndroidSimple {
             private boolean error = false;
 
             @Override
-            protected void onPreExecute()
-            {
+            protected void onPreExecute() {
                 if (getPreExecuteCallback() != null)
                     getPreExecuteCallback().onEvent(null, con, fm, v);
             }
@@ -314,10 +320,8 @@ public class AndroidSimple {
             return false;
         }
 
-        public Download setTimeOut(long time, TimeUnit unit)
-        {
-            if (ua != null)
-            {
+        public Download setTimeOut(long time, TimeUnit unit) {
+            if (ua != null) {
                 try {
                     ua.get(time, unit);
                 } catch (Exception ex) {
@@ -339,8 +343,7 @@ public class AndroidSimple {
             private boolean error;
 
             @Override
-            protected void onPreExecute()
-            {
+            protected void onPreExecute() {
                 if (getPreExecuteCallback() != null)
                     getPreExecuteCallback().onEvent(null, con, fm, v);
             }
@@ -389,19 +392,6 @@ public class AndroidSimple {
                 } catch (Exception e) {
                     error = true;
                     System.out.println("error = " + e);
-                } finally {
-                    error = true;
-                    try {
-                        if (output != null)
-                            output.close();
-                        if (input != null)
-                            input.close();
-                    } catch (IOException ignored) {
-                        return null;
-                    }
-
-                    if (connection != null)
-                        connection.disconnect();
                 }
                 return null;
             }
@@ -464,10 +454,8 @@ public class AndroidSimple {
             return false;
         }
 
-        public Request setTimeOut(long time, TimeUnit unit)
-        {
-            if (ua != null)
-            {
+        public Request setTimeOut(long time, TimeUnit unit) {
+            if (ua != null) {
                 try {
                     ua.get(time, unit);
                 } catch (Exception ex) {
@@ -489,8 +477,7 @@ public class AndroidSimple {
             private String ret;
 
             @Override
-            protected void onPreExecute()
-            {
+            protected void onPreExecute() {
                 if (getPreExecuteCallback() != null)
                     getPreExecuteCallback().onEvent(null, con, fm, v);
             }
@@ -554,5 +541,54 @@ public class AndroidSimple {
 
     public Request request(String url, String POSTargs) {
         return new Request(url, POSTargs);
+    }
+
+    public static class interval {
+        public Handler handler = new Handler();
+        public Runnable run;
+
+        public interval start() {
+            run.run();
+            return this;
+        }
+
+        public interval stop() {
+            handler.removeCallbacks(run);
+            return this;
+        }
+
+        public interval(final Callback c, final int milis) {
+            run = new Runnable() {
+                @Override
+                public void run() {
+                    c.toExecute();
+                    if (handler != null)
+                        handler.postDelayed(run, milis);
+                }
+            };
+        }
+    }
+
+    public interval setInterval(Callback callback, int i) {
+        return new interval(callback, i);
+    }
+
+    public static class timeout {
+        public Handler handler = new Handler();
+        public Runnable run;
+
+        public timeout(final Callback c, final int milis) {
+            run = new Runnable() {
+                @Override
+                public void run() {
+                    c.toExecute();
+                }
+            };
+            handler.postDelayed(run, milis);
+        }
+    }
+
+    public timeout setTimeout(Callback c, int i) {
+        return new timeout(c, i);
     }
 }
