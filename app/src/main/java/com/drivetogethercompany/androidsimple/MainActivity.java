@@ -66,6 +66,9 @@ public class MainActivity extends Activity {
                 System.out.println("10 seconds pass !");
             }
         }, 10000);
+
+
+
         super.onCreate(savedInstanceState);
         setContentView(R.layout.activity_main);
     }
