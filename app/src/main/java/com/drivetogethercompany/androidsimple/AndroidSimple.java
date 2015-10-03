@@ -2,6 +2,9 @@ package com.drivetogethercompany.androidsimple;
 
 import android.app.FragmentManager;
 import android.content.Context;
+import android.media.AudioManager;
+import android.media.MediaPlayer;
+import android.media.MediaRecorder;
 import android.os.AsyncTask;
 import android.os.Handler;
 import android.util.Log;
@@ -22,6 +25,8 @@ import java.io.OutputStreamWriter;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.net.URLConnection;
+import java.util.ArrayList;
+import java.util.List;
 import java.util.concurrent.TimeUnit;
 
 public class AndroidSimple {
@@ -29,6 +34,7 @@ public class AndroidSimple {
     private static Context con = null;
     private static FragmentManager fm = null;
     private static View v = null;
+    private static FailedAndroidSimpleAsync failedasync = null;
 
     public static void setContext(Context con) {
         AndroidSimple.con = con;
@@ -43,6 +49,7 @@ public class AndroidSimple {
     }
 
     public AndroidSimple(Context applicationContext, FragmentManager fragmentManager, View view) {
+        failedasync = new FailedAndroidSimpleAsync();
         con = applicationContext;
         fm = fragmentManager;
         v = view;
@@ -51,20 +58,31 @@ public class AndroidSimple {
     public AndroidSimple() {
     }
 
-    public static class Callback {
+    public void executeAllFailedRequest() {
+        if (failedasync != null)
+            failedasync.executeAll();
+    }
 
-        public void onEvent(String ret, Context c, FragmentManager fm, View v) {
-            //base: nothing !
-        }
+    public abstract static class Callback {
+        public abstract void onEvent(String ret, Context c, FragmentManager fm, View v);
+    }
 
-        public void toExecute() {
-        }
+    public static abstract class CallbackProgress {
+        public abstract void onProgress(float progress);
+    }
+
+    public static abstract class CallbackTime {
+        public abstract void onTime();
+    }
+
+    public static abstract class CallbackFileProgress {
+        public abstract void onProgress(int percent, String file);
     }
 
     public class Callbacks<T> {
         private Callback cancelled = null;
         private Callback postExecute = null;
-        private Callback progressUpdate = null;
+        private CallbackFileProgress progressUpdate = null;
         private Callback failed = null;
         private Callback preExecute = null;
 
@@ -88,7 +106,7 @@ public class AndroidSimple {
             return (T) this;
         }
 
-        public T setOnProgressUpdateCallback(Callback c) {
+        public T setOnProgressUpdateCallback(CallbackFileProgress c) {
             this.progressUpdate = c;
             return (T) this;
         }
@@ -97,7 +115,7 @@ public class AndroidSimple {
             return cancelled;
         }
 
-        public Callback getProgressUpdateCallback() {
+        public CallbackFileProgress getProgressUpdateCallback() {
             return progressUpdate;
         }
 
@@ -137,16 +155,23 @@ public class AndroidSimple {
         }
     }
 
-    protected class Upload extends Callbacks<Upload> {
+    public class Upload extends Callbacks<Upload> {
         private String url = null;
         private String path = null;
         private String addPOST = null;
         private UploadAsynctask ua = null;
+        private String[] u;
+        private boolean retry_if_no_internet;
 
         public Upload(String url, String path, String addPOST) {
             this.url = url;
             this.path = path;
             this.addPOST = addPOST;
+        }
+
+        public Upload setRetryOnNoInternet(boolean val) {
+            retry_if_no_internet = val;
+            return (this);
         }
 
         public Upload setTimeOut(long time, TimeUnit unit) {
@@ -161,7 +186,7 @@ public class AndroidSimple {
         }
 
         public Upload execute() {
-            String[] u = new String[2];
+            u = new String[2];
             u[0] = path;
             u[1] = url;
             ua = new UploadAsynctask();
@@ -180,8 +205,8 @@ public class AndroidSimple {
             return true;
         }
 
-        private class UploadAsynctask extends AsyncTask<String, Void, Void> {
-            private String ret;
+        private class UploadAsynctask extends AsyncTask<String, Integer, Void> {
+            private String ret = "";
             private boolean error = false;
 
             @Override
@@ -229,13 +254,14 @@ public class AndroidSimple {
                     bytesRead = fileInputStream.read(buffer, 0, bufferSize);
                     int count = 0;
                     while (bytesRead > 0) {
-                        onProgressUpdate((int) ((count / fileSize) * 100.0f));
+                        publishProgress((int) ((count / fileSize) * 100.0f));
                         dos.write(buffer, 0, bufferSize);
                         count += bufferSize;
                         bytesAvailable = fileInputStream.available();
                         bufferSize = Math.min(bytesAvailable, maxBufferSize);
                         bytesRead = fileInputStream.read(buffer, 0, bufferSize);
                     }
+                    publishProgress((int) ((count / fileSize) * 100f));
                     dos.writeBytes(lineEnd);
                     dos.writeBytes(twoHyphens + boundary + twoHyphens + lineEnd);
                     fileInputStream.close();
@@ -262,9 +288,10 @@ public class AndroidSimple {
                 return null;
             }
 
-            protected void onProgressUpdate(Integer progress) {
+            @Override
+            protected void onProgressUpdate(Integer... progress) {
                 if (getProgressUpdateCallback() != null)
-                    getProgressUpdateCallback().onEvent(progress.toString(), con, fm, v);
+                    getProgressUpdateCallback().onProgress(progress[0], path);
             }
 
             @Override
@@ -277,15 +304,18 @@ public class AndroidSimple {
 
             @Override
             protected void onPostExecute(Void useless) {
-                if (ret == null || error) {
+                if (error) {
                     onFailed();
                     return;
                 }
                 if (getPostExecuteCallback() != null)
-                    getCancelledCallback().onEvent(ret, con, fm, v);
+                    getPostExecuteCallback().onEvent(ret, con, fm, v);
             }
 
             protected void onFailed() {
+                if (retry_if_no_internet) {
+                    FailedAndroidSimpleAsync.add((AsyncTask) new UploadAsynctask(), u);
+                }
                 if (getFailedCallback() != null)
                     getFailedCallback().onEvent(null, con, fm, v);
             }
@@ -298,24 +328,32 @@ public class AndroidSimple {
 
 
     public class Download extends Callbacks<Download> {
-        private String ret;
         private String dst;
         private String url;
+        private boolean retry_if_no_internet = false;
         private DownloadAsynctask ua = null;
+        private String[] u;
 
         public Download(String url, String destination) {
             this.url = url;
             dst = destination;
         }
 
+        public Download setRetryOnNoInternet(boolean val) {
+            retry_if_no_internet = val;
+            return (this);
+        }
+
         public boolean execute() {
-            String[] u = new String[2];
+            u = new String[2];
             u[0] = url;
             u[1] = dst;
             DownloadAsynctask ua = new DownloadAsynctask();
             if (ua.getStatus() != AsyncTask.Status.RUNNING) {
                 ua.execute(u);
                 return true;
+            } else {
+                Log.d("download asynktask", "already stared !");
             }
             return false;
         }
@@ -339,8 +377,9 @@ public class AndroidSimple {
             return true;
         }
 
-        private class DownloadAsynctask extends AsyncTask<String, Void, Void> {
+        private class DownloadAsynctask extends AsyncTask<String, Integer, Void> {
             private boolean error;
+            private int lastProgress = -1;
 
             @Override
             protected void onPreExecute() {
@@ -356,9 +395,9 @@ public class AndroidSimple {
                 if (new File(dst).isDirectory())
                     dst += "/" + new File(fileurl).getName();
                 String file = new File(info[1]).getName();
-                InputStream input = null;
-                OutputStream output = null;
-                HttpURLConnection connection = null;
+                InputStream input;
+                OutputStream output;
+                HttpURLConnection connection;
                 try {
                     URL url = new URL(fileurl);
                     connection = (HttpURLConnection) url.openConnection();
@@ -379,7 +418,6 @@ public class AndroidSimple {
                     int count = 0;
                     int ret;
                     while ((ret = input.read(data)) != -1) {
-                        onProgressUpdate((int) ((count / (float) total) * 100));
                         count += ret;
                         if (isCancelled()) {
                             input.close();
@@ -387,18 +425,24 @@ public class AndroidSimple {
                             error = true;
                             return null;
                         }
+                        if (total > 0)
+                            publishProgress((int) ((count / (float) total) * 100));
                         output.write(data, 0, ret);
                     }
                 } catch (Exception e) {
                     error = true;
-                    System.out.println("error = " + e);
+                    Log.e("e", "error = " + e);
                 }
                 return null;
             }
 
-            protected void onProgressUpdate(Integer percent) {
+            @Override
+            protected void onProgressUpdate(Integer... percent) {
+                if (percent[0] == lastProgress)
+                    return ;
                 if (getProgressUpdateCallback() != null) {
-                    getProgressUpdateCallback().onEvent(percent.toString(), con, fm, v);
+                    getProgressUpdateCallback().onProgress(percent[0], url);
+                    lastProgress = percent[0];
                 }
             }
 
@@ -409,10 +453,13 @@ public class AndroidSimple {
                     return;
                 }
                 if (getPostExecuteCallback() != null)
-                    getPostExecuteCallback().onEvent(ret, con, fm, v);
+                    getPostExecuteCallback().onEvent(dst, con, fm, v);
             }
 
             protected void onFailed() {
+                if (retry_if_no_internet) {
+                    FailedAndroidSimpleAsync.add(new DownloadAsynctask(), u);
+                }
                 if (getFailedCallback() != null)
                     getFailedCallback().onEvent(null, con, fm, v);
             }
@@ -432,21 +479,27 @@ public class AndroidSimple {
     }
 
 
-    private class Request extends Callbacks<Request> {
+    public class Request extends Callbacks<Request> {
         private String phpfile = null;
         private String POST = null;
         private requestAsyncTask ua = null;
+        private boolean retry_if_no_internet = false;
+        private String[] u = new String[2];
 
         public Request(String phpfile, String POST) {
             this.POST = POST;
             this.phpfile = phpfile;
         }
 
+        public Request setRetryOnNoInternet(boolean val) {
+            retry_if_no_internet = val;
+            return (this);
+        }
+
         public boolean execute() {
-            String[] u = new String[2];
             u[0] = phpfile;
             u[1] = POST;
-            requestAsyncTask ua = new requestAsyncTask();
+            ua = new requestAsyncTask();
             if (ua.getStatus() != AsyncTask.Status.RUNNING) {
                 ua.execute(u);
                 return true;
@@ -476,6 +529,9 @@ public class AndroidSimple {
         private class requestAsyncTask extends AsyncTask<String, Void, Void> {
             private String ret;
 
+            public requestAsyncTask() {
+            }
+
             @Override
             protected void onPreExecute() {
                 if (getPreExecuteCallback() != null)
@@ -485,9 +541,8 @@ public class AndroidSimple {
             @Override
             protected Void doInBackground(String... params) {
                 String urlphp = params[0];
-                String data = params[1];
+                String data = (params[1] == null) ? "" : params[1];
 
-                System.out.println("url = " + urlphp);
                 try {
                     URL url = new URL(urlphp);
 
@@ -506,10 +561,10 @@ public class AndroidSimple {
                         }
 
                     } catch (Exception ex) {
-                        System.out.println("HTTP Request fail:" + ex);
+                        Log.e("e", "HTTP Request fail:" + ex);
                     }
                 } catch (Exception ex) {
-                    System.out.println("Http client failed to init: " + ex);
+                    Log.e("e", "Http client failed to init: " + ex);
                 }
                 return null;
             }
@@ -525,6 +580,9 @@ public class AndroidSimple {
             }
 
             protected void onFailed() {
+                if (retry_if_no_internet) {
+                    FailedAndroidSimpleAsync.add((AsyncTask) new requestAsyncTask(), u);
+                }
                 if (getFailedCallback() != null)
                     getFailedCallback().onEvent(null, con, fm, v);
             }
@@ -543,33 +601,88 @@ public class AndroidSimple {
         return new Request(url, POSTargs);
     }
 
+    public static class FailedAndroidSimpleAsync {
+        public FailedAndroidSimpleAsync() {
+        }
+
+        static List<Request> lst = new ArrayList<>();
+
+        public void executeAll() {
+            if (lst != null && lst.size() > 0) {
+                for (Request r : lst)
+                    r.asy.execute(r.para);
+                lst.clear();
+            }
+        }
+
+        private static class Request {
+            public AsyncTask<String, Void, Void> asy;
+            public String[] para;
+
+            Request(AsyncTask<String, Void, Void> a, String[] p) {
+                this.asy = a;
+                this.para = p;
+            }
+        }
+
+        public static void add(AsyncTask a, String[] data) {
+            lst.add(new Request(a, data));
+        }
+    }
+
     public static class interval {
         public Handler handler = new Handler();
         public Runnable run;
+        private boolean running = false;
+        private int milis;
+        private CallbackTime ct;
+
+        public boolean isrunning() {
+            return running;
+        }
 
         public interval start() {
+            running = true;
             run.run();
             return this;
         }
 
         public interval stop() {
+            running = false;
             handler.removeCallbacks(run);
             return this;
         }
 
-        public interval(final Callback c, final int milis) {
+        public interval(final CallbackTime c, final int mil) {
+            this.milis = mil;
+            ct = c;
+
             run = new Runnable() {
                 @Override
                 public void run() {
-                    c.toExecute();
+                    c.onTime();
                     if (handler != null)
                         handler.postDelayed(run, milis);
                 }
             };
         }
+
+        public void restart() {
+            running = true;
+            handler = new Handler();
+            run = new Runnable() {
+                @Override
+                public void run() {
+                    ct.onTime();
+                    if (handler != null)
+                        handler.postDelayed(run, milis);
+                }
+            };
+            run.run();
+        }
     }
 
-    public interval setInterval(Callback callback, int i) {
+    public interval setInterval(CallbackTime callback, int i) {
         return new interval(callback, i);
     }
 
@@ -577,18 +690,277 @@ public class AndroidSimple {
         public Handler handler = new Handler();
         public Runnable run;
 
-        public timeout(final Callback c, final int milis) {
+        public timeout(final CallbackTime c, final int milis) {
             run = new Runnable() {
                 @Override
                 public void run() {
-                    c.toExecute();
+                    c.onTime();
                 }
             };
             handler.postDelayed(run, milis);
         }
     }
 
-    public timeout setTimeout(Callback c, int i) {
+    public timeout setTimeout(CallbackTime c, int i) {
         return new timeout(c, i);
     }
+
+
+    public static class intervalProgress {
+        public Handler handler = new Handler();
+        public Runnable run;
+        private float progress;
+        public boolean running = false;
+
+        public intervalProgress start() {
+            running = true;
+            run.run();
+            return this;
+        }
+
+        public intervalProgress stop() {
+            running = false;
+            handler.removeCallbacks(run);
+            return this;
+        }
+
+        public intervalProgress(final CallbackProgress c, final int milis, final int maxInMilis) {
+            run = new Runnable() {
+                @Override
+                public void run() {
+                    c.onProgress((progress / (float) maxInMilis) * 100f);
+                    if (handler != null)
+                        handler.postDelayed(run, milis);
+                    progress += milis;
+                }
+            };
+        }
+    }
+
+    public intervalProgress setIntervalProgress(CallbackProgress callback, int i, int max) {
+        return new intervalProgress(callback, i, max);
+    }
+
+    public class Record {
+
+        private MediaRecorder rec;
+        private String outFile;
+        private boolean isRecording;
+        private int maxRecTime;
+        private CallbackTime c;
+        private intervalProgress progress;
+        private Handler recordHandler = new Handler();
+        private Runnable stopRecord = new Runnable() {
+            @Override
+            public void run() {
+                stopRecord();
+            }
+        };
+
+        public Record(String file, int maxTime) {
+            isRecording = false;
+            rec = new MediaRecorder();
+            outFile = file;
+            maxRecTime = maxTime;
+        }
+
+        public Record start() {
+            new Thread(new Runnable() {
+                @Override
+                public void run() {
+                    rec.setOnInfoListener(new MediaRecorder.OnInfoListener() {
+                        @Override
+                        public void onInfo(MediaRecorder mr, int what, int extra) {
+                            if (what == MediaRecorder.MEDIA_RECORDER_INFO_MAX_DURATION_REACHED) {
+                                Log.d("d", "time out ! stopping mediRecorder ...");
+                                stop();
+                            }
+                        }
+                    });
+                    rec.setAudioSource(MediaRecorder.AudioSource.MIC);
+                    rec.setOutputFormat(MediaRecorder.OutputFormat.THREE_GPP);
+                    rec.setOutputFile(outFile);
+                    rec.setAudioEncoder(MediaRecorder.OutputFormat.THREE_GPP);
+                    rec.setMaxDuration(maxRecTime);
+                    try {
+                        rec.prepare();
+                        rec.start();
+                        isRecording = true;
+                        System.out.println("record begin, output file = " + outFile);
+
+                        if (progress != null) {
+                            progress.start();
+                        }
+                    } catch (Exception e) {
+                        System.out.println("record reparation failed !" + e);
+                    }
+                }
+            }).start();
+            return this;
+        }
+
+        public Record setOnProgressCallback(CallbackProgress c, int milis) {
+            progress = setIntervalProgress(c, milis, maxRecTime);
+            return this;
+        }
+
+        private void stopRecord() {
+            if (progress != null && progress.running)
+                progress.stop();
+            if (!isRecording)
+                return ;
+            isRecording = false;
+            rec.stop();
+            rec.release();
+            c.onTime();
+        }
+
+        public Record stop() {
+            recordHandler.postDelayed(stopRecord, 500);
+            return this;
+        }
+
+        public boolean isRecording() {
+            return isRecording;
+        }
+
+        public Record setOnEndCallback(CallbackTime c) {
+            this.c = c;
+            return this;
+        }
+
+        public void cancel() {
+            if (progress != null && progress.running)
+                progress.stop();
+            if (!isRecording)
+                return;
+            try {
+                rec.stop();
+                isRecording = false;
+                rec.release();
+            } catch (Exception e) {
+                Log.e("Recorder", "failed to stop");
+            }
+        }
+    }
+
+    public Record record(String file, int maxTime) {
+        return new Record(file, maxTime);
+    }
+
+    private static List<String> playList = new ArrayList<>();
+
+    public class Player {
+        private MediaPlayer mp;
+        private boolean duplicate = false;
+        private CallbackTime ct = null;
+        private CallbackProgress cp = null;
+        private intervalProgress inter = null;
+        private Handler pauseHandler = new Handler();
+        private boolean pauseState = false;
+        private Runnable pause = new Runnable() {
+            @Override
+            public void run() {
+                pauseState = false;
+                playAll();
+            }
+        };
+
+        private void initMediaPlayer() {
+            mp = new MediaPlayer();
+            mp.setAudioStreamType(AudioManager.STREAM_MUSIC);
+            mp.setOnErrorListener(new MediaPlayer.OnErrorListener() {
+                @Override
+                public boolean onError(MediaPlayer mediaPlayer, int i, int i1) {
+                    onMediaPlayerEnd();
+                    return false;
+                }
+            });
+            mp.setOnCompletionListener(new MediaPlayer.OnCompletionListener() {
+                @Override
+                public void onCompletion(MediaPlayer a) {
+                    onMediaPlayerEnd();
+                }
+            });
+        }
+
+        private void onMediaPlayerEnd() {
+            if (ct != null)
+                ct.onTime();
+            if (cp != null && inter != null)
+                inter.stop();
+            System.out.println("Media finish play song, removing " + playList.get(0) + " from the list");
+            playList.remove(0);
+            System.out.println("Stay to play: " + playList);
+            mp.stop();
+            mp.reset();
+            mp.release();
+            initMediaPlayer();
+            Log.d("d", "wait for playing ...");
+            for (String m : playList)
+                Log.d("music", m);
+            if (playList.size() > 0) {
+                pauseState = true;
+                playAll();
+                //pauseHandler.postDelayed(pause, 500);
+            }
+        }
+
+        private void playAll() {
+            if (playList.size() <= 0)
+                return ;
+            System.out.println("Playing song " + playList.get(0));
+            try {
+                if (cp != null)
+                    inter = setIntervalProgress(cp, 100, mp.getDuration());
+                mp.setDataSource(playList.get(0));
+                mp.prepare();
+                mp.start();
+            } catch (IOException e) {
+                System.out.println("error = " + e);
+            }
+        }
+
+        public Player() {
+            initMediaPlayer();
+        }
+
+        public boolean addToPlay(String path) {
+            if (!duplicate && playList.contains(path))
+                return false;
+            playList.add(path);
+            if (playList.size() == 1)
+                playAll();
+            return true;
+        }
+
+        public void playOnly(String path) {
+            MediaPlayer m = new MediaPlayer();
+            m.setAudioStreamType(AudioManager.STREAM_MUSIC);
+            try {
+                m.setDataSource(path);
+                m.prepare();
+                m.start();
+            } catch (IOException e) {
+                Log.e("mediaplayer", "failed to prepare: " + e);
+            }
+        }
+
+        public void setDuplicateFilePlay(boolean b) {
+            duplicate = b;
+        }
+
+        public void setProgressCallback(CallbackProgress c) {
+            cp = c;
+        }
+
+        public void onPlayEnd(CallbackTime ct) {
+            this.ct = ct;
+        }
+    }
+
+    public Player player() {
+        return new Player();
+    }
 }
+
